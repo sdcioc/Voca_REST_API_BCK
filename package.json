@@ -10,8 +10,11 @@
   "license": "ISC",
   "dependencies": {
     "body-parser": "^1.18.2",
+    "constants": "0.0.2",
     "cors": "^2.8.4",
+    "crypto": "^1.0.1",
     "express": "^4.16.2",
-    "mongodb": "^3.0.1"
+    "mongodb": "^3.0.1",
+    "seedrandom": "^2.4.3"
   }
 }

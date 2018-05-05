@@ -2,6 +2,68 @@ const express = require('express')
 const mongodb = require('mongodb')
 var bodyParser = require('body-parser');
 var cors = require('cors')
+var crypto = require("crypto");
+var path = require("path");
+var fs = require("fs");
+var ObjectId = require('mongodb').ObjectId;
+const constants = require("constants");
+const seedrandom = require("seedrandom");
+
+// Security public key
+var relativeOrAbsolutePathToPublicKey = "./id_rsa.pub.pem"
+var absolutePath = path.resolve(relativeOrAbsolutePathToPublicKey);
+var publicKey = fs.readFileSync(absolutePath, "utf8");
+
+var encryptStringWithRsaPublicKey = function(plaintext) {
+    //var buffer = new Buffer(toEncrypt);
+    //var encrypted = crypto.publicEncrypt(publicKey, buffer);
+    //return encrypted.toString("base64");
+
+    var buffer = new Buffer(256);
+    // the we copy the plaintext to the beginning of the buffer
+    var plaintextBuffer = new Buffer(plaintext, "utf8");
+    plaintextBuffer.copy(buffer);
+    // we have to pad the buffer with some data that is the same every time we encrypt the same string so
+    // 1) we seed the random number generator with something that depends on the plaintext
+    //    ops: there is no Math.seed in JavaScript and NodeJs so we use the seedrandom module
+    var rng = seedrandom(crypto.createHmac("sha256", plaintext));
+    // 2) and fill with random data
+    for (var i = 256 - plaintextBuffer.length; i < 256; i++) {
+        buffer[i] = Math.floor(rng() * 256);
+    }
+    // 3) but we'll have a problem when decrypting: where do the plaintext ends and the random data start?
+    //    we mark it with a 0, in C tradition
+    buffer[plaintextBuffer.length] = 0;
+
+    // 4) we disable automatic padding
+    var encryptionOptions = { key: publicKey, padding: constants.RSA_NO_PADDING };
+    var encrypted = crypto.publicEncrypt(encryptionOptions, buffer);
+    return encrypted.toString("base64");
+};
+/*
+var decryptStringWithRsaPrivateKey = function(toDecrypt, relativeOrAbsolutePathtoPrivateKey) {
+    var absolutePath = path.resolve(relativeOrAbsolutePathtoPrivateKey);
+    var privateKey = fs.readFileSync(absolutePath, "utf8");
+    var buffer = new Buffer(toDecrypt, "base64");
+    var decrypted = crypto.privateDecrypt(privateKey, buffer);
+    return decrypted.toString("utf8");
+
+
+    console.log("Good, they were encrypted to the same ciphertext");
+    const privateKeyPem = yield readFile("../private_key.pem");
+    const decryptionOptions = { key: privateKeyPem, padding: constants.RSA_NO_PADDING };
+    console.log("\n\nand they decrypt to the same plaintext:")
+    console.log("-----------------");
+    const plaintext1 = crypto.privateDecrypt(decryptionOptions, ciphertext1).toString("utf8");
+    console.log(plaintext1.substring(0, plaintext1.indexOf("\0")));
+    console.log("-----------------");
+    const plaintext2 = crypto.privateDecrypt(decryptionOptions, ciphertext2).toString("utf8");
+    console.log(plaintext2.substring(0, plaintext2.indexOf("\0")));
+    console.log("-----------------");
+    
+};
+*/
+
 
 const app = express()
 app.use(bodyParser.json());
@@ -9,7 +71,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use(cors())
 let db = null
 
-
+// Connect to mongodb
 mongodb.MongoClient.connect('mongodb://localhost:27017', (err, database) => {
   if (err) return console.log(err)
   console.log('Connected to database')
@@ -18,126 +80,126 @@ mongodb.MongoClient.connect('mongodb://localhost:27017', (err, database) => {
     console.log('Example app listening on port 3000!')
   })
 })
+
+
+
 /*
 DB structure
 
-info collection
+numbers collection
 {
+    _id : ObejctId
     number : "string",
     type : "string",
-    name : "string",
+    level : "float",
     date : ISODate
 }
 
-tasks
+apikeys collection
 {
-    number : "string",
-    type : "string",
-    "name" : "string"
+    _id : ObejctId
+    querry_number : "int"
+    max_querry_number : "int"
 }
 */
-
-//MOBILE
-app.get('/api/mobile/scam/:year/:month/:day', function(req, res) {
-    var year = req.params.year;
-    var month = req.params.month;
-    var day = req.params.day;
-    var dataString = year + '-' + month + '-' + day;
-    var findQuerry = {
-        date : {"$gte" : new Date(dataString)}
-    }
-    db.collection('info').find(findQuerry).toArray((err, result) => {
-        if (err) {
-            console.log(err);
-            res.send({status:"fail", message:"server intern error"})
-        } else {
-            if (result.length == 0) {
-                res.send({status:"success", message: []})
+var authMiddle = function(req, res, next) {
+    var API_KEY = req.headers['api-key'];
+    if (API_KEY) {
+        var findQuerry = {
+            "_id" : ObjectId(API_KEY)
+        };
+        console.log("find querry: ", findQuerry);
+        db.collection('apikeys').findOne(findQuerry, (err, result) => {
+            if (err) {
+                console.log(err);
+                return res.send({status:"fail", message:"server intern error"})
             } else {
-                res.send({status:"success", message:result})
-            }
-        }
-    });
-});
-
-app.post('/api/mobile/posiblescam', function(req, res) {
-    var number = req.body.number;
-    var type = req.body.type;
-    var name = req.body.name;
-    
-    var findQuerry = {
-        "number" : number
-    };
-    var insertQuerry = {
-        "number" : number,
-        "type" : type,
-        "name" : name
-    };
-
-    db.collection('tasks').findOne(findQuerry, (err, result) => {
-        if (err) {
-            console.log(err);
-            res.send({status:"fail", message:"server intern error"})
-        } else {
-            if (result!=null) {
-                res.send({status:"fail", message:"number exist"})
-            } else {
-                db.collection('tasks').insertOne(insertQuerry, (err, result) => {
-                    if (err) {
-                        console.log(err);
-                        res.send({status:"fail", message:"server intern error"})
+                if (result==null) {
+                    return res.send({
+                        status:"fail",
+                        message: 'api key not exist'
+                    });
+                } else {
+                    if (result.querry_number >= result.max_querry_number) {
+                        return res.send({status:"fail", message:"to many queeries"})
                     } else {
-                        res.send({status:"success", message:"Inserted"})
+                        var updateQuerry = { $set: { querry_number: result.querry_number + 1} };
+                        db.collection('apikeys').updateOne(findQuerry, updateQuerry, (err, result) => {
+                            if (err) {
+                                console.log(err);
+                                return res.send({status:"fail", message:"server intern error"})
+                            } else {
+                                next();
+                            }
+                        })
                     }
-                })
+                }
             }
-        }
-    });
+        });
+    } else {
+        return res.send({
+            status:"fail",
+            message: 'No token provided.'
+        });
+    }
+};
 
-});
-
-// AI
-app.get('/api/ai/reports', function(req, res) {
-    db.collection('tasks').find().toArray((err, result) => {
+//API client
+app.get('/api/mobile/:number', authMiddle, (req, res) => {
+    var number = req.params.number;
+    var findNumber = encryptStringWithRsaPublicKey(number);
+    var findQuerry = {
+        "number" : findNumber
+    };
+    console.log("find querry: ", findQuerry);
+    db.collection('numbers').findOne(findQuerry, (err, result) => {
         if (err) {
             console.log(err);
             res.send({status:"fail", message:"server intern error"})
         } else {
-            if (result.length == 0) {
-                res.send({status:"success", message: []})
+            if (result==null) {
+                res.send({status:"success", type:"unknown"})
             } else {
-                res.send({status:"success", message:result})
+                res.send({status:"success", type: result.type, level: result.level})
             }
         }
     });
 });
 
-app.post('/api/ai/scam', function(req, res) {
+//API MANAGEMENT
+app.post('/api/management/number', function(req, res) {
     var number = req.body.number;
+    var findNumber = encryptStringWithRsaPublicKey(number);
     var type = req.body.type;
-    var name = req.body.name;
+    var level = req.body.level;
     
     var findQuerry = {
-        "number" : number
+        "number" : findNumber
     };
     var insertQuerry = {
-        "number" : number,
+        "number" : findNumber,
         "type" : type,
-        "name" : name,
+        "level" : level,
         "date" :  new Date()
     };
 
-    console.log("my insert querry", insertQuerry);
-
-    db.collection('infoAI').findOne(findQuerry, (err, result) => {
+    db.collection('numbers').findOne(findQuerry, (err, result) => {
         if (err) {
             console.log(err);
             res.send({status:"fail", message:"server intern error"})
         } else {
             if (result!=null) {
-                res.send({status:"fail", message:"number exist"})
+                var updateQuerry = { $set: { type: type, level: level } };
+                db.collection('numbers').updateOne(findQuerry, updateQuerry, (err, result) => {
+                    if (err) {
+                        console.log(err);
+                        res.send({status:"fail", message:"server intern error"})
+                    } else {
+                        res.send({status:"success", message:"Updated"})
+                    }
+                })
             } else {
-                db.collection('infoAI').insertOne(insertQuerry, (err, result) => {
+                db.collection('numbers').insertOne(insertQuerry, (err, result) => {
                     if (err) {
                         console.log(err);
                         res.send({status:"fail", message:"server intern error"})
@@ -151,180 +213,53 @@ app.post('/api/ai/scam', function(req, res) {
 
 });
 
-// management
-app.get('/api/management/scam/:year/:month/:day', function(req, res) {
-    var year = req.params.year;
-    var month = req.params.month;
-    var day = req.params.day;
-    var dataString = year + '-' + month + '-' + day;
+
+app.delete('/api/management/:number', function (req, res) {
+    var number = req.params.number;
+    var findNumber = encryptStringWithRsaPublicKey(number);
+    console.log("number ", number);
+    console.log("cryptonumber ", findNumber);
     var findQuerry = {
-        date : {"$gte" : new Date(dataString)}
-    }
-    db.collection('infoAI').find(findQuerry).toArray((err, result) => {
-        if (err) {
-            console.log(err);
-            res.send({status:"fail", message:"server intern error"})
+        "number" : findNumber
+    };
+    var deleteQuerry = {
+        "number" : findNumber
+    };
+
+    db.collection('numbers').findOne(findQuerry, (err, result) => {
+      if (err) {
+        console.log(err);
+        res.send({status:"fail", message:"server intern error"})
+      } else {
+        if (result!=null) {
+            db.collection('numbers').deleteOne(deleteQuerry, (err, result) => {
+                if (err) {
+                    console.log(err);
+                    res.send({status:"fail", message:"server intern error"})
+                } else {
+                    res.send({status:"success", message:"Deleted"})
+                }
+            })
         } else {
-            if (result.length == 0) {
-                res.send({status:"success", message: []})
-            } else {
-                res.send({status:"success", message:result})
-            }
+            res.send({status:"fail", message:"Number not exist"})
         }
+      }
     });
 });
 
-app.post('/api/management/scam', function(req, res) {
-    var number = req.body.number;
-    var type = req.body.type;
-    var name = req.body.name;
-    
-    var findQuerry = {
-        "number" : number
-    };
+//API KEY GENERATE
+app.get('/api/apikey', (req, res) => {
     var insertQuerry = {
-        "number" : number,
-        "type" : type,
-        "name" : name,
-        "date" :  new Date()
+        querry_number : 0,
+        max_querry_number : 5000
     };
-
-    console.log("my insert querry", insertQuerry);
-
-    db.collection('info').findOne(findQuerry, (err, result) => {
+    db.collection('apikeys').insertOne(insertQuerry, (err, result) => {
         if (err) {
             console.log(err);
             res.send({status:"fail", message:"server intern error"})
         } else {
-            if (result!=null) {
-                res.send({status:"fail", message:"number exist"})
-            } else {
-                db.collection('info').insertOne(insertQuerry, (err, result) => {
-                    if (err) {
-                        console.log(err);
-                        res.send({status:"fail", message:"server intern error"})
-                    } else {
-                        res.send({status:"success", message:"Inserted"})
-                    }
-                })
-            }
+            console.log("api key:", result.insertedId)
+            res.send({status:"success", message:"Inserted", api_key:result.insertedId})
         }
-    });
-
-});
-
-
-app.delete('/api/management/info/:number', function (req, res) {
-    var number = req.params.number;
-
-    var findQuerry = {
-        "number" : number
-    };
-    var deleteQuerry = {
-        "number" : number
-    };
-
-    db.collection('info').findOne(findQuerry, (err, result) => {
-      if (err) {
-        console.log(err);
-        res.send({status:"fail", message:"server intern error"})
-      } else {
-        if (result!=null) {
-            db.collection('info').deleteOne(deleteQuerry, (err, result) => {
-                if (err) {
-                    console.log(err);
-                    res.send({status:"fail", message:"server intern error"})
-                } else {
-                    res.send({status:"success", message:"Deleted"})
-                }
-            })
-        } else {
-            res.send({status:"fail", message:"Board with this name not exist"})
-        }
-      }
-    });
-});
-
-app.delete('/api/management/infoAI/:number', function (req, res) {
-    var number = req.params.number;
-
-    var findQuerry = {
-        "number" : number
-    };
-    var deleteQuerry = {
-        "number" : number
-    };
-
-    db.collection('infoAI').findOne(findQuerry, (err, result) => {
-      if (err) {
-        console.log(err);
-        res.send({status:"fail", message:"server intern error"})
-      } else {
-        if (result!=null) {
-            db.collection('infoAI').deleteOne(deleteQuerry, (err, result) => {
-                if (err) {
-                    console.log(err);
-                    res.send({status:"fail", message:"server intern error"})
-                } else {
-                    res.send({status:"success", message:"Deleted"})
-                }
-            })
-        } else {
-            res.send({status:"fail", message:"Board with this name not exist"})
-        }
-      }
-    });
-});
-
-app.delete('/api/management/tasks/:number', function (req, res) {
-    var number = req.params.number;
-
-    var findQuerry = {
-        "number" : number
-    };
-    var deleteQuerry = {
-        "number" : number
-    };
-
-    db.collection('tasks').findOne(findQuerry, (err, result) => {
-      if (err) {
-        console.log(err);
-        res.send({status:"fail", message:"server intern error"})
-      } else {
-        if (result!=null) {
-            db.collection('tasks').deleteOne(deleteQuerry, (err, result) => {
-                if (err) {
-                    console.log(err);
-                    res.send({status:"fail", message:"server intern error"})
-                } else {
-                    res.send({status:"success", message:"Deleted"})
-                }
-            })
-        } else {
-            res.send({status:"fail", message:"Board with this name not exist"})
-        }
-      }
-    });
-});
-
-
-//OUTER
-
-app.get('/api/all/:number', function(req, res) {
-    var number = req.params.number;
-    var findQuerry = {
-        "number" : number
-    }
-    db.collection('info').find(findQuerry).toArray((err, result) => {
-        if (err) {
-            console.log(err);
-            res.send({status:"fail", message:"server intern error"})
-        } else {
-            if (result.length == 0) {
-                res.send({status:"success", message: "unknown"})
-            } else {
-                res.send({status:"success", message: "scamer"})
-            }
-        }
-    });
+    })
 });
