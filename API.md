@@ -37,7 +37,7 @@
 
   ```javascript
     $http.get(
-        "mobile/" + "+40769261658",
+        "mobile/" + "PHONE_NUMBER",
         {
             headers : {
                 "api-key": "YOUR_API_KEY"
